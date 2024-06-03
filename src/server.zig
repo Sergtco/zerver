@@ -6,19 +6,15 @@ const Allocator = std.mem.Allocator;
 
 pub const ConnectionErr = error{UnregisteredPath};
 
-pub const HandlerFunc = fn (*http.Server.Request) void;
+pub const HandlerFunc = fn (Allocator, *http.Server.Request) anyerror!void;
 pub const Handler = struct { path: []const u8, handler_func: *const HandlerFunc };
 
 pub const Server = struct {
     addr: net.Address,
     config: ServerConfig = undefined,
     router: Router,
-    alloc: Allocator,
-    pool: Thread.Pool,
     pub fn init(allocator: Allocator, address: [4]u8, port: u16, paths: []Handler) !Server {
-        var pool: Thread.Pool = undefined;
-        try pool.init(.{ .allocator = allocator });
-        return Server{ .addr = net.Address.initIp4(address, port), .alloc = allocator, .router = try Router.init(paths), .pool = pool };
+        return Server{ .addr = net.Address.initIp4(address, port), .router = try Router.init(allocator, paths) };
     }
 
     pub fn serve(self: *Server) !void {
@@ -26,7 +22,10 @@ pub const Server = struct {
         defer listener.deinit();
         while (true) {
             const conn = try listener.accept();
-            self.router.handle(conn) catch |err| std.log.debug("some err{}", .{err});
+            defer conn.stream.close();
+            self.router.handle(conn) catch |err| switch (err) {
+                else => |e| std.log.warn("Error: {}", .{e}),
+            };
         }
     }
 };
@@ -35,8 +34,9 @@ pub const ServerConfig = struct {};
 
 pub const Router = struct {
     paths: []Handler,
-    pub fn init(paths: []Handler) !Router {
-        return Router{ .paths = paths };
+    allocator: Allocator,
+    pub fn init(allocator: Allocator, paths: []Handler) !Router {
+        return Router{ .allocator = allocator, .paths = paths };
     }
     pub fn handle(self: *Router, conn: net.Server.Connection) !void {
         var server_buffer: [1024 * 8]u8 = undefined;
@@ -48,11 +48,11 @@ pub const Router = struct {
             try request.respond("Error 404.", .{ .status = http.Status.not_found });
             return ConnectionErr.UnregisteredPath;
         };
-        handler(&request);
-        defer request.server.connection.stream.close();
+        try handler(self.allocator, &request);
+        std.log.info("{} {s}", .{ request.head.method, request.head.target });
     }
 };
 
-pub fn worker(handler: *const HandlerFunc, request: *http.Server.Request) void {
-    handler(request);
+pub fn worker(allocator: Allocator, handler: *const HandlerFunc, request: http.Server.Request) !void {
+    try handler(allocator, request);
 }
