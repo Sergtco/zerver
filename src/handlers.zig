@@ -14,12 +14,5 @@ pub fn index(allocator: Allocator, request: *http.Server.Request) !void {
     };
     const body_data = try json.stringifyAlloc(allocator, body, .{});
     defer allocator.free(body_data);
-
-    var response = request.respondStreaming(.{ .send_buffer = data, .respond_options = .{ .extra_headers = &.{
-        .{ .name = "Content-Type", .value = "application/json" },
-    } } });
-    defer {
-        response.flush() catch |err| std.log.warn("{}", .{err});
-    }
-    try response.writeAll(body_data);
+    try request.respond(body_data, .{ .extra_headers = &.{http.Header{ .name = "Content-Type", .value = "application/json" }} });
 }
